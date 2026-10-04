@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PCuino AppSDK — Drag &amp; Drop Apps</title>
+<style>
+:root{--bg:#17191d;--panel:#22252b;--panel2:#2b2f36;--text:#f2f4f7;--muted:#aeb5c0;--accent:#7c5cff;--line:#3b4049;--event:#eab308;--action:#22c55e;--logic:#3b82f6;--network:#06b6d4;--input:#f97316;--file:#ec4899}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px system-ui,-apple-system,Segoe UI,sans-serif}
+header{height:58px;background:#101216;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 18px;gap:14px}
+header h1{font-size:18px;margin:0}header span{color:var(--muted)}
+button,input,select{font:inherit}button{border:0;border-radius:7px;padding:8px 11px;background:#343944;color:#fff;cursor:pointer}button:hover{background:#444a57}
+.primary{background:var(--accent)}.danger{background:#a52a3b}.small{padding:5px 8px;font-size:12px}
+.layout{display:grid;grid-template-columns:235px 1fr 365px;height:calc(100vh - 58px)}
+.sidebar,.right{background:var(--panel);overflow:auto}.sidebar{border-right:1px solid var(--line)}.right{border-left:1px solid var(--line)}
+.workspace{position:relative;overflow:auto;background:#191b20}
+.section{padding:14px;border-bottom:1px solid var(--line)}.section h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;color:var(--muted);letter-spacing:.08em}
+.field{display:flex;flex-direction:column;gap:5px;margin:8px 0}.field label{font-size:12px;color:var(--muted)}
+input,select{width:100%;background:#14161a;color:#fff;border:1px solid var(--line);border-radius:6px;padding:8px}
+.block-palette{display:flex;flex-direction:column;gap:7px}.palette-block{padding:9px 10px;border-radius:7px;color:#fff;cursor:grab;font-weight:600;border-left:5px solid transparent}
+.palette-block small{display:block;font-weight:400;color:#eef;margin-top:2px;opacity:.8}
+.event{background:#69560a;border-color:var(--event)}.action{background:#176b3a;border-color:var(--action)}.logic{background:#24579b;border-color:var(--logic)}.network{background:#096d7c;border-color:var(--network)}.input{background:#9a4812;border-color:var(--input)}.file{background:#84255e;border-color:var(--file)}
+#program{min-height:100%;padding:28px 34px 80px}.empty{max-width:520px;margin:60px auto;text-align:center;color:var(--muted);border:2px dashed #3b4049;border-radius:14px;padding:35px}
+.stack{max-width:760px;margin:auto}.dropzone{height:10px;border-radius:5px;margin:3px 0}.dropzone.over{height:35px;background:#30275a}
+.block{position:relative;margin:4px 0;padding:11px 38px 11px 15px;border-radius:8px;min-height:43px;box-shadow:0 1px 2px #0008;border-left:7px solid transparent}
+.block .remove{position:absolute;right:8px;top:7px;background:#0003;padding:3px 6px}.block .title{font-weight:700}.block .controls{margin-top:8px;display:flex;gap:7px;align-items:center;flex-wrap:wrap}.block input,.block select{width:auto;min-width:100px;padding:5px;background:#101216}.block input[type=text]{min-width:170px}
+.indent{margin-left:28px;border-left:3px solid #454a55;padding-left:10px}.nested{min-height:8px}
+.toolbar{position:sticky;top:0;z-index:3;background:#191b20dd;backdrop-filter:blur(5px);padding:10px;border-bottom:1px solid var(--line);display:flex;gap:7px;flex-wrap:wrap}
+pre{white-space:pre-wrap;background:#111318;border:1px solid var(--line);border-radius:8px;padding:12px;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;max-height:55vh;overflow:auto}
+.tabs{display:flex;border-bottom:1px solid var(--line)}.tabs button{flex:1;border-radius:0;background:transparent}.tabs button.active{background:#343944}
+#status{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);background:#101216;border:1px solid var(--line);padding:8px 13px;border-radius:20px;display:none}
+.help{font-size:12px;color:var(--muted);line-height:1.45}
+@media(max-width:900px){.layout{grid-template-columns:190px 1fr}.right{display:none}}
+</style>
+</head>
+<body>
+<header>
+  <h1>🧩 PCuino AppSDK</h1><span>Visual app builder → self-registering PCuino app</span>
+  <div style="margin-left:auto;display:flex;gap:7px">
+    <button onclick="newApp()">New</button><button onclick="saveProject()">Save</button><button onclick="loadProject()">Load</button><button onclick="importCpp()">Import app.cpp</button>
+    <button class="primary" onclick="generate()">Generate Code</button>
+  </div>
+</header>
+
+<div class="layout">
+<aside class="sidebar">
+  <div class="section">
+    <h3>App</h3>
+    <div class="field"><label>Name</label><input id="appName" value="myapp"></div>
+    <div class="field"><label>Wire ID — one printable character</label><input id="appId" maxlength="1" value="m"></div>
+    <div class="field"><label>Description</label><input id="appBlurb" value="my custom app"></div>
+    <div class="help" style="margin-top:10px">Output folder: <b>src/apps/&lt;name&gt;/</b><br>Drop the generated <b>app.cpp</b> there. The OS discovers and registers it automatically.</div>
+  </div>
+  <div class="section">
+    <h3>Blocks — drag into workspace</h3>
+    <div class="block-palette" id="palette"></div>
+  </div>
+  <div class="section help">
+    Blocks run top-to-bottom inside each event. Logic blocks can contain actions: drag actions into the nested area. The generator preserves that nesting in C++. Input fields become C++ values.
+  </div>
+</aside>
+
+<main class="workspace" id="workspace">
+  <div class="toolbar">
+    <button onclick="addBlock('open')">▶ App Open</button>
+    <button onclick="addBlock('line')">⌨ Line Input</button>
+    <button onclick="addBlock('frame')">📨 Message Received</button>
+    <button onclick="addBlock('tx')">✓ Send Finished</button>
+    <button onclick="addBlock('disconnect')">🔌 Disconnect</button>
+    <button onclick="clearBlocks()">Clear Blocks</button>
+  </div>
+  <div id="program"><div class="empty" id="empty">Drag an event block here, then add actions underneath it.<br><br>Try <b>When App Opens</b> → <b>Show Text</b> → <b>Send Message</b>.</div><div class="stack" id="stack"></div></div>
+</main>
+
+<aside class="right">
+  <div class="tabs"><button class="active" onclick="showTab('code',this)">C++</button><button onclick="showTab('help',this)">Block Guide</button></div>
+  <div class="section" id="codeTab">
+    <h3>Generated C++</h3>
+    <button class="primary" onclick="generate()" style="width:100%;margin-bottom:8px">Generate / Refresh</button>
+    <pre id="code">Build your blocks, then click Generate.</pre>
+    <button onclick="downloadCpp()" style="width:100%;margin-top:8px">Download app.cpp</button><input id="cppFile" type="file" accept=".cpp,.c,.txt" style="display:none">
+  </div>
+  <div class="section" id="helpTab" style="display:none">
+    <h3>AppSDK Guide</h3>
+    <div class="help">
+      <b>Text</b> fields produce C++ strings.<br>
+      <b>Number</b> fields produce numeric constants.<br>
+      <b>App ID</b> is the one-character destination for generic app messages.<br><br>
+      The builder validates the app ID and generates one self-contained <code>app.cpp</code>. Because apps live under <code>src/apps/&lt;name&gt;/</code>, the generated source includes <code>../../../core_api.h</code> so the Arduino build can find the project-root core API. Registration is handled by <code>AppRegistrar</code>; there is no register function, app flag, central app list, or generated header.
+    </div>
+  </div>
+</aside>
+</div>
+<div id="status"></div>
+
+<script>
+const defs={
+ open:{cat:'event',name:'When App Opens',desc:'runs when the app is opened',container:true},
+ line:{cat:'event',name:'When User Enters Line',desc:'runs after Enter',container:true},
+ frame:{cat:'event',name:'When Message Received',desc:'runs when peer sends to this Wire ID',container:true},
+ tx:{cat:'event',name:'When Send Finishes',desc:'runs after queued message is ACKed or times out',container:true},
+ disconnect:{cat:'event',name:'When Disconnected',desc:'runs when link is lost',container:true},
+ clear:{cat:'action',name:'Clear Screen'},
+ clearline:{cat:'action',name:'Clear Current Line'},
+ show:{cat:'action',name:'Show Text',inputs:[['text','Text','Hello!']]},
+ notice:{cat:'action',name:'Show Notice',inputs:[['text','Text','Done.']]},
+ error:{cat:'action',name:'Show Error',inputs:[['text','Text','Something went wrong.']]},
+ prompt:{cat:'action',name:'Refresh Prompt'},
+ send:{cat:'network',name:'Send Message',inputs:[['id','App ID','m'],['text','Message','hello']]},
+ sendfmt:{cat:'network',name:'Send Formatted',inputs:[['id','App ID','m'],['text','Format','n=%u'],['num','Number','1']]},
+ online:{cat:'logic',name:'If Online',container:true},
+ peer:{cat:'input',name:'Show Peer Name'},
+ input:{cat:'input',name:'Show User Input'},
+ iftext:{cat:'logic',name:'If Message Equals',inputs:[['text','Text','PING']],container:true},
+ download:{cat:'file',name:'Download File',inputs:[['text','Filename','file.txt']]},
+ upload:{cat:'file',name:'Upload File',inputs:[['text','Filename','file.txt']]},
+ view:{cat:'file',name:'View File',inputs:[['text','Filename','file.txt']]},
+ custom:{cat:'action',name:'Custom C++',desc:'preserved code with no native block yet',inputs:[['code','Code','']] ,custom:true},
+ customGlobal:{cat:'action',name:'Custom Global C++',desc:'preserved global declarations/helpers',inputs:[['code','Code','']] ,customGlobal:true}
+};
+const paletteOrder=['open','line','frame','tx','disconnect','clear','clearline','show','notice','error','prompt','send','sendfmt','online','peer','input','iftext','download','upload','view'];
+let blocks=[], seq=1, lastCpp='';
+
+function esc(s){return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;')}
+function init(){
+ document.getElementById('palette').innerHTML=paletteOrder.map(k=>{
+  let d=defs[k]; return `<div class="palette-block ${d.cat}" draggable="true" data-type="${k}">${d.name}<small>${d.desc||''}</small></div>`
+ }).join('');
+ document.querySelectorAll('.palette-block').forEach(el=>el.addEventListener('dragstart',e=>e.dataTransfer.setData('type',el.dataset.type)));
+ setupDrop(document.getElementById('stack'));
+}
+function isEvent(type){return ['open','line','frame','tx','disconnect'].includes(type)}
+function findBlock(id,list=blocks){
+ for(const b of list){if(b.id===id)return b;const hit=findBlock(id,b.children||[]);if(hit)return hit}
+ return null;
+}
+function findList(id,list=blocks){
+ for(const b of list){
+  if((b.children||[]).some(x=>x.id===id))return b.children;
+  const hit=findList(id,b.children||[]);if(hit)return hit;
+ }
+ return null;
+}
+function setupDrop(el){
+ el.addEventListener('dragover',e=>{e.preventDefault();const z=e.target.closest('.dropzone');if(z)z.classList.add('over')});
+ el.addEventListener('dragleave',e=>{const z=e.target.closest('.dropzone');if(z)z.classList.remove('over')});
+ el.addEventListener('drop',e=>{
+  e.preventDefault();
+  document.querySelectorAll('.dropzone.over').forEach(z=>z.classList.remove('over'));
+  const type=e.dataTransfer.getData('type'); if(!type)return;
+  const z=e.target.closest('.dropzone');
+  if(!z)return;
+  const parentId=Number(z.dataset.parent)||null;
+  const before=Number(z.dataset.before);
+  addBlock(type,before,{parentId});
+ });
+}
+function addBlock(type,before=-1,data={}){
+ if(data.parentId && (isEvent(type)||type==='customGlobal')){toast('Event/global blocks must stay at the top level.');return}
+ if(!data.parentId && !isEvent(type) && type!=='customGlobal'){toast('Drop actions inside an event or logic block.');return}
+ if(!data.parentId && isEvent(type) && blocks.some(x=>x.type===type)){toast('Only one block of each event type is allowed.');return}
+ let b={id:seq++,type,vals:{},children:[]};
+ (defs[type].inputs||[]).forEach(x=>b.vals[x[1]]=data[x[1]]??x[2]);
+ if(data.parentId){
+  const parent=findBlock(data.parentId);
+  if(!parent)return;
+  const list=parent.children||(parent.children=[]);
+  const i=list.findIndex(x=>x.id===before);
+  list.splice(i<0?list.length:i,0,b);
+ }else{
+  const i=blocks.findIndex(x=>x.id===before);
+  blocks.splice(i<0?blocks.length:i,0,b);
+ }
+ render();
+}
+function removeBlock(id,list=blocks){
+ const i=list.findIndex(x=>x.id===id);
+ if(i>=0){list.splice(i,1);return true}
+ for(const b of list)if(removeBlock(id,b.children||[]))return true;
+ return false;
+}
+function render(){
+ document.getElementById('empty').style.display=blocks.length?'none':'block';
+ const stack=document.getElementById('stack'); stack.innerHTML='';
+ renderList(stack,blocks,null);
+}
+function renderList(parent,list,parentId){
+ list.forEach((b,i)=>{
+  parent.appendChild(makeBlock(b));
+  const z=document.createElement('div');z.className='dropzone';z.dataset.parent=parentId||'';z.dataset.before=i<list.length?list[i].id:-1;parent.appendChild(z);
+ });
+ const z=parent.querySelector?.(':scope > .dropzone:last-child');
+ if(!list.length || !z){
+  const dz=document.createElement('div');dz.className='dropzone';dz.dataset.parent=parentId||'';dz.dataset.before=-1;parent.appendChild(dz);
+ }
+}
+function makeBlock(b){
+ let d=defs[b.type], el=document.createElement('div');el.className=`block ${d.cat}`;
+ let controls=(d.inputs||[]).map(x=>{
+  let [kind,label,def]=x,v=b.vals[label]??def;
+  if(kind==='code') return `<label>${label}: <textarea data-k="${esc(label)}" rows="4" style="width:100%;resize:vertical;background:#14161a;color:#fff;border:1px solid var(--line);border-radius:6px;padding:8px">${esc(String(v))}</textarea></label>`;
+  return `<label>${label}: <input type="${kind==='num'?'number':'text'}" value="${esc(String(v))}" data-k="${esc(label)}"></label>`;
+ }).join('');
+ el.innerHTML=`<div class="title">${d.name}</div>${controls?`<div class="controls">${controls}</div>`:''}${d.container?'<div class="nested"></div>':''}<button class="remove" title="Remove">×</button>`;
+ el.querySelector('.remove').onclick=()=>{removeBlock(b.id);render()};
+ el.querySelectorAll('input').forEach(inp=>inp.oninput=()=>b.vals[inp.dataset.k]=inp.value);
+ if(d.container){const nested=el.querySelector('.nested');setupDrop(nested);renderList(nested,b.children||[],b.id)}
+ return el;
+}
+function clearBlocks(){blocks=[];render();document.getElementById('code').textContent='Build your blocks, then click Generate.'}
+function newApp(){if(confirm('Clear the current app?')){blocks=[];seq=1;document.getElementById('appName').value='myapp';document.getElementById('appId').value='m';document.getElementById('appBlurb').value='my custom app';render();}}
+function val(b,k){return b.vals[k]??''}
+function cstr(s){return 'F("'+String(s).replaceAll('\\','\\\\').replaceAll('"','\\"').replaceAll('\n','\\n')+'")'}
+function indentLines(text,n){const pad=' '.repeat(n);return text.split('\n').map(x=>x?pad+x:x).join('\n')}
+function blockCode(b,indent=2,context={}){
+ const pad=' '.repeat(indent);
+ switch(b.type){
+ case'clear':return pad+'core_clear_screen();';
+ case'clearline':return pad+'core_clear_line();';
+ case'show':return pad+`Serial.println(${cstr(val(b,'Text'))});`;
+ case'notice':return pad+`core_notice(${cstr(val(b,'Text'))});`;
+ case'error':return pad+`core_err(${cstr(val(b,'Text'))});`;
+ case'prompt':return pad+'core_prompt_refresh();';
+ case'send':return pad+`core_app_send('${String(val(b,'App ID')).slice(0,1)}', "${String(val(b,'Message')).replaceAll('"','\\"')}");`;
+ case'sendfmt':return pad+`core_app_send_p('${String(val(b,'App ID')).slice(0,1)}', PSTR("${String(val(b,'Format')).replaceAll('"','\\"')}"), ${Number(val(b,'Number'))||0});`;
+ case'peer':return pad+'Serial.println(core_peer_name());';
+ case'input':return pad+'Serial.write(core_input_buffer(), core_input_len()); Serial.println();';
+ case'download':return pad+`core_transfer_download("${String(val(b,'Filename')).replaceAll('"','\\"')}");`;
+ case'upload':return pad+`core_transfer_upload("${String(val(b,'Filename')).replaceAll('"','\\"')}");`;
+ case'view':return pad+`core_file_view("${String(val(b,'Filename')).replaceAll('"','\\"')}");`;
+ case'online':{
+   const inner=(b.children||[]).map(x=>blockCode(x,indent+2,context)).filter(Boolean).join('\n');
+   return pad+'if (core_online()) {\n'+(inner||pad+'  // no actions')+'\n'+pad+'}';
+ }
+ case'iftext':{
+   if(context.event!=='frame'){return pad+'// If Message Equals is only valid inside Message Received.';}
+   const inner=(b.children||[]).map(x=>blockCode(x,indent+2,{...context,hasData:true})).filter(Boolean).join('\n');
+   return pad+`if (data && strcmp(data, "${String(val(b,'Text')).replaceAll('"','\\"')}") == 0) {\n`+(inner||pad+'  // no actions')+'\n'+pad+'}';
+ }
+ case'custom':return indentLines(String(val(b,'Code')),indent);
+ case'customGlobal':return String(val(b,'Code'));
+ default:return '';
+ }
+}
+function eventBody(type){
+ const ev=blocks.find(b=>b.type===type);
+ if(!ev)return '';
+ return (ev.children||[]).map(b=>blockCode(b,2,{event:type})).filter(Boolean).join('\n');
+}
+function eventCode(type){
+ const body=eventBody(type);
+ if(type==='open')return 'static bool app_on_open(void) {\n'+(body||'  // no actions')+'\n  return true;\n}\n';
+ if(type==='line')return 'static bool app_on_line(char* line) {\n  (void)line;\n'+(body||'  // no actions')+'\n  return true;\n}\n';
+ if(type==='frame')return 'static void app_on_frame(uint8_t op, const char* data) {\n  if (op != CORE_OP_APP || core_display_locked()) return;\n'+(body||'  // no actions')+'\n}\n';
+ if(type==='tx')return 'static void app_on_tx_done(uint8_t op, bool ok) {\n  (void)op; (void)ok;\n'+(body||'  // no actions')+'\n}\n';
+ if(type==='disconnect')return 'static void app_on_disconnect(void) {\n'+(body||'  // no actions')+'\n}\n';
+}
+function generate(){
+ let name=(document.getElementById('appName').value||'myapp').replace(/[^A-Za-z0-9_]/g,'_');
+ if(!name) name='myapp';
+ let id=(document.getElementById('appId').value||'m')[0];
+ if(!id || id===':' || id.charCodeAt(0)<33 || id.charCodeAt(0)>126){
+   toast('Wire ID must be one printable character and not ":"'); return;
+ }
+ let events=blocks.filter(b=>isEvent(b.type));
+ let globals=blocks.filter(b=>b.type==='customGlobal');
+ if(!events.length){toast('Add at least one event block before generating.');return;}
+ let E=t=>events.some(x=>x.type===t)?eventCode(t):'';
+ let hooks=[
+  `"${name}", "${(document.getElementById('appBlurb').value||'custom app').replaceAll('"','\\"')}"`,
+  events.some(x=>x.type==='disconnect')?'app_on_disconnect':'nullptr',
+  events.some(x=>x.type==='open')?'app_on_open':'nullptr',
+  events.some(x=>x.type==='frame')?'app_on_frame':'nullptr',
+  events.some(x=>x.type==='line')?'app_on_line':'nullptr',
+  events.some(x=>x.type==='tx')?'app_on_tx_done':'nullptr',
+  `'${id}'`,
+  'nullptr'
+ ].join(',\n  ');
+ let cpp=[];
+ cpp.push('#include "../../../core_api.h"');
+ cpp.push('#include <string.h>');
+ cpp.push('');
+ for(const g of globals){ if(g.vals.Code && g.vals.Code.trim()){ cpp.push(g.vals.Code.trim()); cpp.push(''); } }
+ for(const part of [E('disconnect'),E('open'),E('frame'),E('line'),E('tx')]){
+   if(part) cpp.push(...part.split('\n').filter((x,i,a)=>!(i===a.length-1 && x==='')));
+ }
+ cpp.push('static const AppHooks '+name+'_hooks = {');
+ cpp.push('  '+hooks);
+ cpp.push('};');
+ cpp.push('');
+ cpp.push(`static const AppRegistrar ${name}_auto_register(&${name}_hooks);`);
+ cpp.push('');
+ lastCpp=cpp.join('\n');
+ document.getElementById('code').textContent=lastCpp;
+ toast('app.cpp generated — put it in src/apps/'+name+'/');
+}
+function downloadText(name,text,type='text/plain'){let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500)}
+function downloadCpp(){if(!lastCpp)generate();if(lastCpp)downloadText('app.cpp',lastCpp,'text/plain')}
+function importCpp(){
+ const input=document.getElementById('cppFile');
+ if(!input){toast('Import control unavailable');return}
+ input.value='';input.onchange=()=>{const f=input.files&&input.files[0];if(!f)return;const r=new FileReader();r.onload=()=>decompileCpp(String(r.result));r.readAsText(f)};input.click();
+}
+function matchingBrace(s,start){let depth=0,quote='',escp=false;for(let i=start;i<s.length;i++){const c=s[i];if(quote){if(escp)escp=false;else if(c==='\\')escp=true;else if(c===quote)quote='';continue}if(c==='"'||c==="'"){quote=c;continue}if(c==='{')depth++;else if(c==='}'&&--depth===0)return i}return -1}
+function functionBody(code,names){for(const n of names){const safe=n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');const re=new RegExp('(?:static\\s+)?(?:bool|void)\\s+'+safe+'\\s*\\([^)]*\\)\\s*\\{','m');const m=re.exec(code);if(m){const a=m.index+m[0].lastIndexOf('{'),z=matchingBrace(code,a);if(z>=0)return code.slice(a+1,z)}}return ''}
+function ib(type,vals={},children=[]){return {id:seq++,type,vals,children}}
+function decompileBody(body,event){
+ let out=[],rest=body;
+ const custom=x=>{x=x.replace(/^\s*\(void\)line;\s*/,'').replace(/\s*return true;\s*$/,'').trim();if(x)out.push(ib('custom',{Code:x}))};
+ // Exact native patterns that can safely become blocks.
+ rest=rest.replace(/if\s*\(\s*!line\[0\]\s*\)\s*\{\s*core_prompt_refresh\s*\(\s*\)\s*;\s*return true;\s*\}/g,()=>{out.push(ib('prompt'));return '';});
+ // Preserve source order for ordinary statements by consuming from the front.
+ while(rest.trim()){
+   rest=rest.replace(/^\s+/,'');
+   let m;
+   if((m=/^core_clear_screen\s*\(\s*\)\s*;/.exec(rest))){out.push(ib('clear'));rest=rest.slice(m[0].length);continue;}
+   if((m=/^core_clear_line\s*\(\s*\)\s*;/.exec(rest))){out.push(ib('clearline'));rest=rest.slice(m[0].length);continue;}
+   if((m=/^core_prompt_refresh\s*\(\s*\)\s*;/.exec(rest))){out.push(ib('prompt'));rest=rest.slice(m[0].length);continue;}
+   if((m=/^Serial\.println\s*\(\s*F\("((?:\\.|[^"\\])*)"\)\s*\)\s*;/.exec(rest))){out.push(ib('show',{Text:m[1].replace(/\\n/g,'\n').replace(/\\"/g,'"').replace(/\\\\/g,'\\')}));rest=rest.slice(m[0].length);continue;}
+   if((m=/^core_notice\s*\(\s*F\("((?:\\.|[^"\\])*)"\)\s*\)\s*;/.exec(rest))){out.push(ib('notice',{Text:m[1]}));rest=rest.slice(m[0].length);continue;}
+   if((m=/^core_err\s*\(\s*F\("((?:\\.|[^"\\])*)"\)\s*\)\s*;/.exec(rest))){out.push(ib('error',{Text:m[1]}));rest=rest.slice(m[0].length);continue;}
+   if((m=/^core_file_view\s*\(\s*"((?:\\.|[^"\\])*)"\s*\)\s*;/.exec(rest))){out.push(ib('view',{Filename:m[1]}));rest=rest.slice(m[0].length);continue;}
+   if((m=/^core_app_send\s*\(\s*'([^'])'\s*,\s*"((?:\\.|[^"\\])*)"\s*\)\s*;/.exec(rest))){out.push(ib('send',{'App ID':m[1],Message:m[2]}));rest=rest.slice(m[0].length);continue;}
+   if((m=/^core_transfer_download\s*\(\s*"((?:\\.|[^"\\])*)"\s*\)\s*;/.exec(rest))){out.push(ib('download',{Filename:m[1]}));rest=rest.slice(m[0].length);continue;}
+   if((m=/^core_transfer_upload\s*\(\s*"((?:\\.|[^"\\])*)"\s*\)\s*;/.exec(rest))){out.push(ib('upload',{Filename:m[1]}));rest=rest.slice(m[0].length);continue;}
+   // Generated If Online / If Message Equals are recognized as containers.
+   if((m=/^if\s*\(\s*core_online\(\)\s*\)\s*\{/.exec(rest))){const a=m[0].lastIndexOf('{'),z=matchingBrace(rest,a);if(z>=0){out.push(ib('online',{},decompileBody(rest.slice(a+1,z),event)));rest=rest.slice(z+1);continue;}}
+   if(event==='frame' && (m=/^if\s*\(\s*data\s*&&\s*strcmp\(data\s*,\s*"((?:\\.|[^"\\])*)"\s*\)\s*==\s*0\s*\)\s*\{/.exec(rest))){const a=m[0].lastIndexOf('{'),z=matchingBrace(rest,a);if(z>=0){out.push(ib('iftext',{Text:m[1]},decompileBody(rest.slice(a+1,z),'frame')));rest=rest.slice(z+1);continue;}}
+   // Preserve one unsupported statement at a time so later native blocks can still be recovered.
+   const nl=rest.indexOf('\n');
+   if(nl>=0){custom(rest.slice(0,nl));rest=rest.slice(nl+1);continue;}
+   custom(rest);break;
+ }
+ return out;
+}
+function decompileCpp(code){
+ const clean=code.replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/.*$/gm,'');
+ const hm=clean.match(/static\s+const\s+AppHooks\s+\w+_hooks\s*=\s*\{([\s\S]*?)\n\};/);
+ const name=(clean.match(/AppHooks\s+\w+_hooks\s*=\s*\{\s*"([^"]*)"/)||[])[1]||'imported_app';
+ const blurb=(clean.match(/AppHooks\s+\w+_hooks\s*=\s*\{\s*"[^"]*"\s*,\s*"([^"]*)"/)||[])[1]||'imported app';
+ const refs=hm?hm[1].split(',').map(x=>x.trim()):[];
+ const id=(hm&&((hm[1].match(/'([^']+)'/)||[])[1]))||'m';
+ const defs2=[['disconnect',refs[2]],['open',refs[3]],['frame',refs[4]],['line',refs[5]],['tx',refs[6]]];
+ const fallback={disconnect:['app_on_disconnect','viewer_on_disconnect'],open:['app_on_open','viewer_open'],frame:['app_on_frame','viewer_on_frame'],line:['app_on_line','viewer_on_line'],tx:['app_on_tx_done','viewer_on_tx_done']};
+ blocks=[];seq=1;
+ for(const [type,ref] of defs2){if(!ref||ref==='nullptr'||ref==='NULL')continue;const body=functionBody(code,[ref,...fallback[type]]);if(body)blocks.push({id:seq++,type,vals:{},children:decompileBody(body,type)})}
+ for(const [type,names] of Object.entries(fallback)){if(blocks.some(b=>b.type===type))continue;const body=functionBody(code,names);if(body)blocks.push({id:seq++,type,vals:{},children:decompileBody(body,type)})}
+ // Preserve global declarations/helpers required by imported code.
+ const firstFn=clean.search(/(?:static\s+)?(?:bool|void)\s+\w+\s*\([^)]*\)\s*\{/);
+ const hookPos=clean.indexOf('static const AppHooks');
+ const cut=firstFn>=0?firstFn:(hookPos>=0?hookPos:-1);
+ if(cut>0){let g=clean.slice(0,cut).replace(/^\s*#include[^\n]*\n/gm,'').trim();if(g)blocks.unshift({id:seq++,type:'customGlobal',vals:{Code:g},children:[]});}
+ if(!blocks.length)blocks=[{id:seq++,type:'open',vals:{},children:[ib('custom',{Code:code.trim()})]}];
+ document.getElementById('appName').value=name.replace(/[^A-Za-z0-9_]/g,'_')||'imported_app';document.getElementById('appId').value=(id||'m')[0];document.getElementById('appBlurb').value=blurb;render();document.getElementById('code').textContent=code;toast('Imported — unsupported C++ is preserved as Custom C++ blocks.');
+}
+function saveProject(){let p={name:appName.value,id:appId.value,blurb:appBlurb.value,blocks,seq};downloadText((appName.value||'myapp')+'.pcapp',JSON.stringify(p,null,2),'application/json')}
+function loadProject(){let i=document.createElement('input');i.type='file';i.accept='.pcapp,.json';i.onchange=()=>{let r=new FileReader();r.onload=()=>{try{let p=JSON.parse(r.result);appName.value=p.name||'myapp';appId.value=p.id||'m';appBlurb.value=p.blurb||'';blocks=p.blocks||[];seq=p.seq||1;render();toast('Project loaded')}catch(e){toast('Invalid project file')}};r.readAsText(i.files[0])};i.click()}
+function showTab(t,b){document.getElementById('codeTab').style.display=t==='code'?'block':'none';document.getElementById('helpTab').style.display=t==='help'?'block':'none';document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active')}
+function toast(s){let x=document.getElementById('status');x.textContent=s;x.style.display='block';clearTimeout(window._t);window._t=setTimeout(()=>x.style.display='none',2200)}
+init();
+</script>
+</body>
+</html>

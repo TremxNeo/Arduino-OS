@@ -1,0 +1,706 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FTP-B91 v2 Image Encoder</title>
+<style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box}
+  body{margin:0;background:#111;color:#ddd;font:14px Consolas,Monaco,monospace}
+  .wrap{max-width:1100px;margin:auto;padding:18px}
+  h1{font-size:20px;margin:0 0 14px;color:#6f6}
+  h2{font-size:14px;color:#6cf;margin:0 0 9px}
+  .grid{display:grid;grid-template-columns:360px minmax(0,1fr);gap:14px}
+  .box{background:#1b1b1b;border:1px solid #333;padding:12px;border-radius:6px}
+  .row{display:flex;gap:8px;align-items:center;margin:8px 0}
+  label{min-width:110px;color:#aaa}
+  select,input[type=text],input[type=number]{background:#0d0d0d;color:#eee;border:1px solid #444;padding:6px}
+  input[type=number]{width:90px}
+  input[type=range]{flex:1}
+  input[type=file]{width:100%}
+  button{background:#222;color:#fff;border:1px solid #666;padding:7px 12px;cursor:pointer}
+  button:hover{background:#333}
+  button:disabled{opacity:.4;cursor:default}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;background:#000;width:min(100%,480px);height:auto;border:1px solid #444;display:block}
+  .preview{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}
+  .stats{line-height:1.65;color:#bbb;min-width:220px}
+  .ok{color:#6f6}.warn{color:#fd6}.bad{color:#f66}
+  textarea{width:100%;height:220px;background:#090909;color:#ddd;border:1px solid #444;font:12px Consolas,monospace;resize:vertical;white-space:pre;overflow:auto}
+  .bar{height:8px;background:#333;margin-top:8px}.fill{height:100%;width:0;background:#6f6}
+  .small{font-size:12px;color:#888}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FTP-B91 v2 Image Encoder</h1>
+  <div class="grid">
+    <div class="box">
+      <h2>Input</h2>
+      <input id="file" type="file" accept="image/*">
+
+      <div class="row"><label>Width</label>
+        <select id="w"><option>16</option><option>32</option><option selected>64</option><option>96</option></select></div>
+      <div class="row"><label>Height</label>
+        <select id="h"><option>16</option><option>32</option><option selected>64</option><option>96</option></select></div>
+      <div class="row"><label>Lock aspect</label>
+        <input id="lock" type="checkbox">
+        <span class="small" id="lockNote">keep source image's ratio</span></div>
+      <div class="row"><label>Palette</label>
+        <select id="pal">
+          <option>1</option><option>2</option><option>3</option><option>4</option>
+          <option>6</option><option>8</option><option>12</option><option selected>16</option>
+        </select></div>
+      <div class="row"><label>Mode</label>
+        <select id="mode"><option value="rgb" selected>RGB</option><option value="gray">Grayscale</option></select></div>
+      <div class="row"><label>Fit</label>
+        <select id="fit">
+          <option value="cover">Crop to fill</option>
+          <option value="contain" selected>Fit / letterbox</option>
+          <option value="stretch">Stretch</option>
+        </select></div>
+
+      <div class="row"><label>Animation</label>
+        <input id="anim" type="checkbox" checked disabled>
+        <span class="small">GIF</span>
+        <input id="gdelay" type="number" min="10" max="2550" step="10" value="100" disabled>
+        <span class="small">ms/frame</span></div>
+      <div class="row"><label>Auto-fit size</label>
+        <input id="auto" type="checkbox" checked>
+        <span class="small">target</span>
+        <input id="target" type="number" min="20" max="960" value="900">
+        <span class="small">chars</span></div>
+      <div class="row"><label>Smoothing</label>
+        <input id="smooth" type="range" min="0" max="80" value="0" disabled>
+        <span id="smoothv" style="min-width:24px;text-align:right">0</span></div>
+      <p class="small" style="margin:0 0 6px">
+        Smoothing lets a pixel reuse its left/upper neighbour's colour when that is
+        nearly as close as the best palette colour. Higher = smaller file, less detail.
+        With auto-fit on, the smallest smoothing that fits the target is chosen.</p>
+
+      <div class="row"><label>Filename</label>
+        <input id="name" type="text" value="image.b91" maxlength="10"></div>
+      <div id="nameNote" class="small"></div>
+
+      <button id="encode">Encode FTP-B91 v2</button>
+      <button id="download" disabled>Download .b91</button>
+
+      <div class="bar"><div id="fill" class="fill"></div></div>
+      <p class="small">
+        Output is the printable Base91 stream read by the Arduino <code>view</code>
+        command (v2 format: palette + context-modelled range coder; v1 files are no
+        longer read). Terminal: <code>cd eeprom</code>, then
+        <code>put name &lt;paste stream&gt;</code>, then <code>view name</code>.
+      </p>
+    </div>
+
+    <div class="box">
+      <h2>Preview (decoded exactly as the Arduino will draw it)</h2>
+      <div class="preview">
+        <canvas id="preview" width="64" height="64"></canvas>
+        <div id="stats" class="stats">Choose an image.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="box" style="margin-top:14px">
+    <h2>Encoded stream</h2>
+    <textarea id="out" spellcheck="false" readonly></textarea>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ===================== FTP-B91 v2 core (encoder + exact decoder mirror) =====================
+  File layout (binary, before Base91):
+    0: 0xB9
+    1: 0x02 = RGB palette, 0x03 = gray palette; +0x04 = animated (0x06 / 0x07)
+       animated only: byte 3 = frame count, byte 4 = delay in 10 ms units, then the
+       palette; all frames share the palette and ONE range-coder stream (models carry over)
+    2: bits 7-6 width code | bits 5-4 height code | bits 3-0 palette count - 1
+       size code: 0=16, 1=32, 2=64, 3=96
+    palette: N*3 bytes (RGB) or N bytes (gray), sorted by luminance
+    rest: adaptive binary range-coder payload (LZMA-style, 12-bit probs, shift 4),
+          first (always zero) byte omitted, trailing zero bytes trimmed (decoder pads zeros)
+  Pixel model (all causal, identical in the Arduino decoder):
+    L = left, U = up, UL = up-left (edges mirror the nearest neighbour)
+    t   = relation class of L/U/UL (5 classes)
+    A:  pix == L ?            ctx = t*2 + lastMiss          (10 probs)
+    B:  pix == U ? (L != U)   ctx = t-2                     (3 probs)
+    C:  escape: sign (ctx: U>L / U<L / U==L) then unary magnitude of |pix-L|
+        sign omitted / unary shortened when the palette edge leaves only one choice
+*/
+const SIZES = [16, 32, 64, 96];
+const B91 =
+  "!\"$%&'()*+,-./0123456789;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
+  "[]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+
+const PB = 12, PSH = 4;
+function newModel() {
+  const mk = n => new Uint16Array(n).fill(1 << (PB - 1));
+  return { pA: mk(10), pB: mk(3), pS: mk(3), pM: mk(14) };
+}
+
+/* ---------- Base91 (standard basE91 algorithm, custom alphabet) ---------- */
+function base91Encode(bytes) {
+  let out = "", b = 0, n = 0;
+  for (const byte of bytes) {
+    b |= byte << n;
+    n += 8;
+    if (n > 13) {
+      let v = b & 8191;
+      if (v > 88) { b >>= 13; n -= 13; }
+      else { v = b & 16383; b >>= 14; n -= 14; }
+      out += B91[v % 91] + B91[Math.floor(v / 91)];
+    }
+  }
+  if (n) {
+    out += B91[b % 91];
+    if (n > 7 || b > 90) out += B91[Math.floor(b / 91)];
+  }
+  return out;
+}
+
+/* ---------- range encoder (LZMA style) ---------- */
+class RCEnc {
+  constructor() { this.low = 0; this.range = 0xFFFFFFFF; this.cache = 0; this.cacheSize = 1; this.out = []; }
+  shiftLow() {
+    if (this.low < 0xFF000000 || this.low >= 0x100000000) {
+      const carry = this.low >= 0x100000000 ? 1 : 0;
+      let t = this.cache;
+      do { this.out.push((t + carry) & 0xFF); t = 0xFF; } while (--this.cacheSize !== 0);
+      this.cache = (this.low >>> 24) & 0xFF;
+    }
+    this.cacheSize++;
+    this.low = (this.low & 0x00FFFFFF) * 256;
+  }
+  bit(probs, i, bit) {
+    const p = probs[i];
+    const bound = (this.range >>> PB) * p;
+    if (!bit) { this.range = bound; probs[i] = p + ((4096 - p) >> PSH); }
+    else { this.low += bound; this.range -= bound; probs[i] = p - (p >> PSH); }
+    while (this.range < 0x1000000) { this.range *= 256; this.shiftLow(); }
+  }
+  finish() {
+    // pick the value inside [low, low+range) with the most trailing zero bytes
+    const hi = this.low + this.range - 1;
+    for (const k of [4294967296, 16777216, 65536, 256, 1]) {
+      const v = Math.ceil(this.low / k) * k;
+      if (v <= hi) { this.low = v; break; }
+    }
+    for (let i = 0; i < 5; i++) this.shiftLow();
+    if (this.out[0] !== 0) throw new Error("range coder: unexpected leading byte");
+    const bytes = this.out.slice(1);
+    let n = bytes.length, trimmed = 0;
+    while (n > 0 && bytes[n - 1] === 0 && trimmed < 8) { n--; trimmed++; }
+    return bytes.slice(0, n);
+  }
+}
+
+/* ---------- neighbourhood / contexts (must equal the Arduino code) ---------- */
+function nbrs(ix, w, x, y) {
+  let U = y ? ix[(y - 1) * w + x] : 0;
+  const L = x ? ix[y * w + x - 1] : U;
+  if (!y) U = L;
+  const UL = (x && y) ? ix[(y - 1) * w + x - 1] : U;
+  return [L, U, UL];
+}
+function relClass(L, U, UL) {
+  return (L === U) ? (UL === L ? 0 : 1) : (UL === L ? 2 : (UL === U ? 3 : 4));
+}
+
+function entropyEncode(list, w, h, pc) {
+  const m = newModel(), rc = new RCEnc();
+  let last = 0;
+  for (const ix of list) for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = ix[y * w + x];
+    const [L, U, UL] = nbrs(ix, w, x, y);
+    const t = relClass(L, U, UL);
+    rc.bit(m.pA, t * 2 + last, v === L ? 0 : 1);
+    last = v !== L ? 1 : 0;
+    if (v === L) continue;
+    if (L !== U) {
+      rc.bit(m.pB, t - 2, v === U ? 0 : 1);
+      if (v === U) continue;
+    }
+    const canNeg = L > 0, canPos = L < pc - 1;
+    const neg = v < L;
+    if (canNeg && canPos) rc.bit(m.pS, U > L ? 1 : (U < L ? 2 : 0), neg ? 1 : 0);
+    const maxK = (neg ? L : pc - 1 - L) - 1;
+    const k = Math.abs(v - L) - 1;
+    for (let j = 0; j < maxK; j++) {
+      const b = j < k ? 1 : 0;
+      rc.bit(m.pM, j, b);
+      if (!b) break;
+    }
+  }
+  return rc.finish();
+}
+
+/* ---------- palette ---------- */
+function lum(p) { return 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]; }
+function rgbDist(a, b) { const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2]; return dr * dr + dg * dg + db * db; }
+
+function pixelList(data, gray) {
+  const pts = [];
+  for (let i = 0; i < data.length; i += 4) {
+    let r = data[i], g = data[i + 1], b = data[i + 2];
+    if (gray) { const y = Math.round(0.299 * r + 0.587 * g + 0.114 * b); r = g = b = y; }
+    pts.push([r, g, b]);
+  }
+  return pts;
+}
+
+function medianCut(pts, count) {
+  let boxes = [pts.slice()];
+  while (boxes.length < count) {
+    let best = -1, bestScore = -1, bestAxis = 0;
+    for (let bi = 0; bi < boxes.length; bi++) {
+      const box = boxes[bi];
+      if (box.length < 2) continue;
+      const min = [255, 255, 255], max = [0, 0, 0];
+      for (const p of box) for (let k = 0; k < 3; k++) { if (p[k] < min[k]) min[k] = p[k]; if (p[k] > max[k]) max[k] = p[k]; }
+      let axis = 0, range = max[0] - min[0];
+      if (max[1] - min[1] > range) { axis = 1; range = max[1] - min[1]; }
+      if (max[2] - min[2] > range) { axis = 2; range = max[2] - min[2]; }
+      const score = range * Math.log2(box.length + 1);
+      if (score > bestScore) { bestScore = score; best = bi; bestAxis = axis; }
+    }
+    if (best < 0 || bestScore <= 0) break;
+    const box = boxes[best];
+    box.sort((a, b) => a[bestAxis] - b[bestAxis]);
+    const mid = box.length >> 1;
+    boxes.splice(best, 1, box.slice(0, mid), box.slice(mid));
+  }
+  return boxes.map(box => {
+    let r = 0, g = 0, b = 0;
+    for (const p of box) { r += p[0]; g += p[1]; b += p[2]; }
+    const n = box.length;
+    return [Math.round(r / n), Math.round(g / n), Math.round(b / n)];
+  });
+}
+
+// Lloyd refinement: pulls the median-cut centres onto the real colour clusters
+function refinePalette(pts, pal, iters) {
+  pal = pal.map(p => p.slice());
+  for (let it = 0; it < iters; it++) {
+    const s = pal.map(() => [0, 0, 0, 0]);
+    for (const p of pts) {
+      let best = 0, bd = Infinity;
+      for (let k = 0; k < pal.length; k++) { const d = rgbDist(p, pal[k]); if (d < bd) { bd = d; best = k; } }
+      const a = s[best]; a[0] += p[0]; a[1] += p[1]; a[2] += p[2]; a[3]++;
+    }
+    let moved = false;
+    for (let k = 0; k < pal.length; k++) {
+      if (!s[k][3]) continue;
+      const q = [Math.round(s[k][0] / s[k][3]), Math.round(s[k][1] / s[k][3]), Math.round(s[k][2] / s[k][3])];
+      if (q[0] !== pal[k][0] || q[1] !== pal[k][1] || q[2] !== pal[k][2]) moved = true;
+      pal[k] = q;
+    }
+    if (!moved) break;
+  }
+  return pal;
+}
+
+function makePalette(data, count, gray) {
+  const pts = pixelList(data, gray);
+  let pal = medianCut(pts, count);
+  pal = refinePalette(pts, pal, 8);
+  if (gray) pal = pal.map(p => { const y = Math.round(lum(p)); return [y, y, y]; });
+  // unique + sorted by luminance: neighbouring indexes = similar brightness,
+  // which is what the delta coder in the escape path exploits
+  const seen = new Set(), uniq = [];
+  for (const p of pal) { const key = p.join(","); if (!seen.has(key)) { seen.add(key); uniq.push(p); } }
+  uniq.sort((a, b) => lum(a) - lum(b) || a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+  return uniq;
+}
+
+/* Rate-aware mapping: if the predicted colour (L or U) is almost as close as the
+   nearest palette colour, use it. tolSq is the allowed extra squared RGB distance. */
+function mapPixels(data, palette, gray, w, h, tolSq) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y * w + x) * 4;
+    let p = [data[i], data[i + 1], data[i + 2]];
+    if (gray) { const g = Math.round(0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]); p = [g, g, g]; }
+    let best = 0, bd = Infinity;
+    for (let k = 0; k < palette.length; k++) { const d = rgbDist(p, palette[k]); if (d < bd) { bd = d; best = k; } }
+    let pick = best;
+    if (tolSq > 0) {
+      const [L, U] = nbrs(out, w, x, y);
+      const dL = rgbDist(p, palette[L]), dU = rgbDist(p, palette[U]);
+      const okL = dL <= bd + tolSq, okU = dU <= bd + tolSq;
+      if (okL && (!okU || dL <= dU)) pick = L; else if (okU) pick = U;
+    }
+    out[y * w + x] = pick;
+  }
+  return out;
+}
+
+// drop palette entries that ended up unused (smoothing can orphan some)
+function compact(ix, palette) {
+  const used = new Array(palette.length).fill(false);
+  for (const v of ix) used[v] = true;
+  const map = [], pal = [];
+  for (let k = 0; k < palette.length; k++) if (used[k]) { map[k] = pal.length; pal.push(palette[k]); }
+  return { ix: ix.map(v => map[v]), palette: pal };
+}
+
+function buildFile(w, h, palette, gray, rcBytes, anim) {
+  const lg = v => { const c = SIZES.indexOf(v); if (c < 0) throw new Error("unsupported size " + v); return c; };
+  const raw = [0xB9, (gray ? 0x03 : 0x02) | (anim ? 4 : 0), (lg(w) << 6) | (lg(h) << 4) | (palette.length - 1)];
+  if (anim) raw.push(anim.n, anim.d);
+  for (const p of palette) { if (gray) raw.push(p[0]); else raw.push(p[0], p[1], p[2]); }
+  for (const b of rcBytes) raw.push(b);
+  return raw;
+}
+
+function encodeWithPalette(data, w, h, basePal, gray, smooth) {
+  const ix0 = mapPixels(data, basePal, gray, w, h, 3 * smooth * smooth);
+  const c = compact(ix0, basePal);
+  const rc = entropyEncode([c.ix], w, h, c.palette.length);
+  const raw = buildFile(w, h, c.palette, gray, rc);
+  return { encoded: base91Encode(raw), rawBytes: raw.length, rcBytes: rc.length,
+           palette: c.palette, indexes: c.ix, smooth, gray };
+}
+
+/* Auto-fit: smallest smoothing that fits `target` characters */
+function encodeFit(data, w, h, palCount, gray, target, maxSmooth) {
+  const pal = makePalette(data, palCount, gray);
+  let r = null;
+  for (let s = 0; s <= maxSmooth; s++) {
+    r = encodeWithPalette(data, w, h, pal, gray, s);
+    if (r.encoded.length <= target) { r.fits = true; return r; }
+  }
+  r.fits = false;
+  return r;
+}
+
+function encodeAnim(datas, w, h, basePal, gray, smooth, dly) {
+  const n = datas.length, frameSize = w * h, all = new Uint8Array(n * frameSize);
+  datas.forEach((d, f) => all.set(mapPixels(d, basePal, gray, w, h, 3 * smooth * smooth), f * frameSize));
+  const c = compact(all, basePal);
+  const frames = datas.map((_, f) => c.ix.subarray(f * frameSize, f * frameSize + frameSize));
+  const rc = entropyEncode(frames, w, h, c.palette.length);
+  const raw = buildFile(w, h, c.palette, gray, rc, { n, d: dly });
+  return { encoded: base91Encode(raw), rawBytes: raw.length, rcBytes: rc.length, palette: c.palette,
+           indexes: frames[0], frames, smooth, gray, anim: { n, d: dly } };
+}
+function encodeFitAnim(datas, w, h, palCount, gray, target, dly) {
+  const frameBytes = w * h * 4;
+  const cat = new Uint8ClampedArray(datas.length * frameBytes);
+  datas.forEach((d, f) => cat.set(d, f * frameBytes));
+  const pal = makePalette(cat, palCount, gray);
+  let r;
+  for (let s = 0; s <= 80; s++) { r = encodeAnim(datas, w, h, pal, gray, s, dly); if (r.encoded.length <= target) { r.fits = true; return r; } }
+  r.fits = false;
+  return r;
+}
+
+/* ===================== exact mirror of the Arduino decoder ===================== */
+function b91Val(c) {
+  if (c < 33 || c > 126 || c === 35 || c === 58 || c === 92) return -1;
+  return c - 33 - (c > 35) - (c > 58) - (c > 92);
+}
+class B91R {
+  constructor(s) { this.s = s; this.addr = 0; this.pair = -1; this.acc = 0; this.bits = 0; this.bad = 0; this.pad = 0; }
+  next() {
+    while (this.bits < 8) {
+      if (this.addr >= this.s.length) {
+        if (this.pair < 0) { this.bad = 2; return -1; }
+        this.acc |= this.pair << this.bits; this.bits += 8; this.pair = -1; break;
+      }
+      const v = b91Val(this.s.charCodeAt(this.addr++));
+      if (v < 0) { this.bad = 1; return -1; }
+      if (this.pair < 0) this.pair = v;
+      else {
+        const q = this.pair + v * 91; this.pair = -1;
+        this.acc |= q << this.bits; this.bits += ((q & 8191) > 88) ? 13 : 14;
+      }
+    }
+    const out = this.acc & 255; this.acc >>>= 8; this.bits -= 8; return out;
+  }
+  rcByte() {
+    const v = this.next();
+    if (v >= 0) return v;
+    if (this.bad === 2) { this.bad = 0; this.pad++; }
+    return 0;
+  }
+}
+function decodeB91v2(str) {
+  const b = new B91R(str);
+  const magic = b.next(), ver = b.next(), dim = b.next();
+  if (magic !== 0xB9) throw new Error("not an image");
+  if ((ver & 0xFA) !== 2) throw new Error("bad version");
+  const gray = ver & 1, w = SIZES[dim >> 6], h = SIZES[(dim >> 4) & 3], pc = (dim & 15) + 1;
+  let nf = 1, dly = 0;
+  if (ver & 4) { nf = b.next(); dly = b.next(); }
+  const palette = [];
+  for (let i = 0; i < pc; i++) {
+    const r = b.next();
+    if (gray) palette.push([r, r, r]); else palette.push([r, b.next(), b.next()]);
+  }
+  let range = 0xFFFFFFFF, code = 0;
+  for (let i = 0; i < 4; i++) code = ((code << 8) | b.rcByte()) >>> 0;
+  const m = newModel();
+  const bit = (probs, i) => {
+    while (range < 0x1000000) { range = (range << 8) >>> 0; code = ((code << 8) | b.rcByte()) >>> 0; }
+    const p = probs[i], bound = (range >>> PB) * p;
+    if (code < bound) { range = bound; probs[i] = p + ((4096 - p) >> PSH); return 0; }
+    range -= bound; code -= bound; probs[i] = p - (p >> PSH); return 1;
+  };
+  const frames = [];
+  let last = 0;
+  for (let f = 0; f < nf; f++) {
+  const ix = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const [L, U, UL] = nbrs(ix, w, x, y);
+    const t = relClass(L, U, UL);
+    let pix;
+    if (!bit(m.pA, t * 2 + last)) pix = L;
+    else if (L !== U && !bit(m.pB, t - 2)) pix = U;
+    else {
+      const canNeg = L > 0, canPos = L < pc - 1;
+      let neg;
+      if (canNeg && canPos) neg = bit(m.pS, U > L ? 1 : (U < L ? 2 : 0));
+      else if (canNeg) neg = 1; else if (canPos) neg = 0; else throw new Error("corrupt");
+      const maxK = (neg ? L : pc - 1 - L) - 1;
+      let k = 0;
+      while (k < maxK && bit(m.pM, k)) k++;
+      pix = neg ? L - (k + 1) : L + (k + 1);
+    }
+    ix[y * w + x] = pix;
+    last = pix !== L ? 1 : 0;
+    if (b.bad) throw new Error("bad char");
+  }
+  frames.push(ix);
+  }
+  return { w, h, gray, palette, indexes: frames[0], frames, delay: dly, pad: b.pad };
+}
+
+
+/* ===================== UI ===================== */
+const $ = id => document.getElementById(id);
+const MAX_EEPROM_FILE = 900;      // MAX_EEPROM_FILE in the sketch
+let sourceImage = null, lastBlob = null, busy = false, again = false;
+let gifFrames = null, previewTimer = null;
+
+async function loadGif(file) {       // all frames via the browser's ImageDecoder (no GIF parser needed)
+  const dec = new ImageDecoder({ data: await file.arrayBuffer(), type: "image/gif" });
+  await dec.tracks.ready;
+  const n = Math.min(dec.tracks.selectedTrack.frameCount, 60), out = [];
+  let ms = 0;
+  for (let i = 0; i < n; i++) {
+    const { image } = await dec.decode({ frameIndex: i });
+    const c = document.createElement("canvas");
+    c.width = image.displayWidth; c.height = image.displayHeight;
+    c.getContext("2d").drawImage(image, 0, 0);
+    ms += (image.duration || 100000) / 1000;
+    image.close();
+    out.push(c);
+  }
+  if (n > 1) { gifFrames = out; $("gdelay").value = Math.max(10, Math.round(ms / n / 10) * 10); }
+}
+
+function snapSize(v) {           // nearest allowed size (log scale)
+  let best = SIZES[0], bd = Infinity;
+  for (const s of SIZES) { const d = Math.abs(Math.log(s / v)); if (d < bd) { bd = d; best = s; } }
+  return best;
+}
+function srcRatio() {             // width / height of the source image (1 if none yet)
+  return sourceImage ? (sourceImage.naturalWidth || sourceImage.width) / (sourceImage.naturalHeight || sourceImage.height) : 1;
+}
+function applyLock(changed) {     // changed = "w" or "h": the other one follows
+  if (!$("lock").checked) return;
+  const r = srcRatio();
+  if (changed === "h") $("w").value = snapSize(+$("h").value * r);
+  else $("h").value = snapSize(+$("w").value / r);
+  $("lockNote").textContent = sourceImage
+    ? "source " + r.toFixed(2) + ":1, output " + (+$("w").value / +$("h").value).toFixed(2) + ":1"
+    : "keep source image's ratio";
+}
+
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type.startsWith("image/")) { reject(new Error("Selected file is not a supported image.")); return; }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read image file."));
+    reader.onload = () => {
+      const im = new Image();
+      im.onload = () => (!im.naturalWidth || !im.naturalHeight)
+        ? reject(new Error("Image loaded but has no valid dimensions.")) : resolve(im);
+      im.onerror = () => reject(new Error("Could not decode image. Try JPG, PNG, GIF, or WebP."));
+      im.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function sampleImage(im, w, h, fit) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  const srcW = im.naturalWidth || im.width, srcH = im.naturalHeight || im.height;
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = "high";
+  g.fillStyle = "#000";
+  g.fillRect(0, 0, w, h);
+  if (fit === "stretch") g.drawImage(im, 0, 0, w, h);
+  else {
+    const sx = w / srcW, sy = h / srcH;
+    const scale = fit === "cover" ? Math.max(sx, sy) : Math.min(sx, sy);
+    const dw = srcW * scale, dh = srcH * scale;
+    g.drawImage(im, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  }
+  return g.getImageData(0, 0, w, h);
+}
+
+function drawPreview(indexes, palette, w, h) {
+  const c = $("preview"), g = c.getContext("2d");
+  c.width = w; c.height = h;
+  const img = g.createImageData(w, h);
+  for (let i = 0; i < indexes.length; i++) {
+    const p = palette[indexes[i]];
+    img.data[i * 4] = p[0]; img.data[i * 4 + 1] = p[1]; img.data[i * 4 + 2] = p[2]; img.data[i * 4 + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+}
+
+// Arduino file names: a-z 0-9 . _ -  (max 10 characters)
+function arduinoName(base) {
+  let b = base.toLowerCase().replace(/[^a-z0-9._-]/g, "_").replace(/^\.+/, "");
+  return ((b || "image").slice(0, 6)) + ".b91";
+}
+function checkName() {
+  const v = $("name").value;
+  const ok = /^[A-Za-z0-9._-]{1,10}$/.test(v);$("nameNote").innerHTML = ok ? "" : '<span class="warn">Not a valid Arduino name (a-z 0-9 . _ - , max 10).</span>';
+}
+$("name").addEventListener("input", checkName);
+
+const tick = () => new Promise(r => setTimeout(r, 0));
+const esc = s => String(s).replace(/[<>&]/g, "");
+
+async function doEncode() {
+  if (!sourceImage) { $("stats").innerHTML = '<span class="warn">Choose an image first.</span>'; return; }
+  if (busy) { again = true; return; }
+  busy = true;
+  try {
+    do {
+      again = false;
+      const useAnim = !!gifFrames && $("anim").checked;
+      $("w").disabled = $("h").disabled = false;
+      const w = +$("w").value, h = +$("h").value, pc = +$("pal").value;
+      const gray = $("mode").value === "gray", fit = $("fit").value;
+      const auto = $("auto").checked;
+      const target = Math.max(20, Math.min(960, +$("target").value || MAX_EEPROM_FILE));
+      $("fill").style.width = "20%";
+      await tick();
+      const data = sampleImage(sourceImage, w, h, fit).data;
+      $("fill").style.width = "45%";
+      await tick();
+
+      let r;
+      if (useAnim) {   // drop every 2nd/3rd/... frame until it fits the target
+        const all = gifFrames.map(c => sampleImage(c, w, h, fit).data);
+        const base = +$("gdelay").value || 100;
+        for (let st = 1; ; st++) {
+          const sel = all.filter((_, i) => i % st === 0);
+          r = encodeFitAnim(sel, w, h, pc, gray, target, Math.max(1, Math.min(255, Math.round(base * st / 10))));
+          if (r.fits || sel.length <= 2) break;
+        }
+        $("smooth").value = r.smooth; $("smoothv").textContent = r.smooth;
+      } else if (auto) {
+        r = encodeFit(data, w, h, pc, gray, target, 80);
+        $("smooth").value = r.smooth; $("smoothv").textContent = r.smooth;
+      } else {
+        const s = +$("smooth").value;
+        r = encodeWithPalette(data, w, h, makePalette(data, pc, gray), gray, s);
+        r.fits = r.encoded.length <= target;
+      }
+      $("fill").style.width = "80%";
+
+      // decode with the exact mirror of the Arduino decoder and show THAT
+      let verified = false, dec = null, why = "";
+      try {
+        dec = decodeB91v2(r.encoded);
+        verified = dec.w === w && dec.h === h && dec.pad <= 8 &&
+          dec.palette.length === r.palette.length &&
+          (!r.frames || (dec.frames.length === r.frames.length && dec.frames.every((f, k) => f.every((v, i) => v === r.frames[k][i])))) &&
+          dec.indexes.every((v, i) => v === r.indexes[i]) &&
+          dec.palette.every((p, k) => p[0] === r.palette[k][0] && p[1] === r.palette[k][1] && p[2] === r.palette[k][2]);
+      } catch (e) { why = e.message; }
+      clearInterval(previewTimer);
+      const pv = dec || r, fr = pv.frames || [pv.indexes];
+      let fi = 0;
+      const show = () => drawPreview(fr[fi++ % fr.length], pv.palette, w, h);
+      show();
+      if (fr.length > 1) previewTimer = setInterval(show, (r.anim ? r.anim.d : 10) * 10);
+
+      $("out").value = r.encoded;
+      lastBlob = new Blob([r.encoded], { type: "text/plain;charset=ascii" });
+      $("download").disabled = false;
+
+      const chars = r.encoded.length;
+      const hdr = 3 + r.palette.length * (gray ? 1 : 3);
+      const bpp = (r.rcBytes * 8 / (w * h * (r.anim ? r.anim.n : 1))).toFixed(2);
+      const sizeCls = chars <= MAX_EEPROM_FILE ? "ok" : "bad";
+      $("stats").innerHTML =
+        `<span class="ok">Encoded</span> ${w} × ${h}, ${gray ? "grayscale" : "RGB"}<br>` +
+        `Palette: ${r.palette.length} colours (${hdr - 3} B)<br>` +
+        (r.anim ? `Frames: ${r.anim.n}, ${r.anim.d * 10} ms each<br>` : "") +
+        `Smoothing: ${r.smooth}${auto ? " (auto)" : ""}<br>` +
+        `Coded pixels: ${r.rcBytes} B (${bpp} bit/px)<br>` +
+        `File: ${r.rawBytes} B binary → <span class="${sizeCls}">${chars} chars</span> ` +
+        `(EEPROM limit ${MAX_EEPROM_FILE})<br>` +
+        (verified ? '<span class="ok">Decoder round-trip verified</span>'
+                  : `<span class="bad">Round-trip check FAILED ${esc(why)}</span>`) +
+        (r.fits ? "" : `<br><span class="warn">Does not fit ${target} chars. Use fewer colours, a smaller size, or a simpler image.</span>`);
+      $("fill").style.width = "100%";
+    } while (again);
+  } catch (err) {
+    $("fill").style.width = "0";
+    $("download").disabled = true;
+    $("stats").innerHTML = '<span class="warn">' + esc(err.message) + "</span>";
+    console.error(err);
+  }
+  busy = false;
+}
+
+$("file").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    sourceImage = await loadImage(f);
+    gifFrames = null;
+    if (f.type === "image/gif" && window.ImageDecoder) { try { await loadGif(f); } catch (e) { console.error(e); } }
+    $("anim").disabled = $("gdelay").disabled = !gifFrames;
+    $("name").value = arduinoName(f.name.replace(/\.[^.]+$/, ""));
+    checkName();
+    applyLock("w");
+    await doEncode();
+  } catch (err) { $("stats").textContent = err.message; }
+});
+
+$("auto").addEventListener("change", () => { $("smooth").disabled = $("auto").checked; if (sourceImage) doEncode(); });
+$("smooth").addEventListener("input", () => { $("smoothv").textContent = $("smooth").value; if (sourceImage && !$("auto").checked) doEncode(); });
+$("w").addEventListener("change", () => applyLock("w"));
+$("h").addEventListener("change", () => applyLock("h"));
+$("lock").addEventListener("change", () => { applyLock("w"); if (sourceImage) doEncode(); });
+for (const id of ["w", "h", "pal", "mode", "fit", "target", "anim", "gdelay"]) $(id).addEventListener("change", () => { if (sourceImage) doEncode(); });
+$("encode").addEventListener("click", doEncode);
+
+$("download").addEventListener("click", () => {
+  if (!lastBlob) return;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(lastBlob);
+  a.download = $("name").value || "image.b91";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+});
+
+$("out").addEventListener("focus", e => e.target.select());
+</script>
+</body>
+</html>
